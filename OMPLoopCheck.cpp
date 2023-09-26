@@ -34,8 +34,9 @@ static StringRef RefactoringRationale =
 
 // AST Matchers
 
-// Match a loop
-StatementMatcher LoopMatcher = forStmt().bind("forLoop");
+// Match a loop inside a function
+StatementMatcher LoopMatcher =
+    forStmt(hasAncestor(functionDecl().bind("function"))).bind("forLoop");
 
 // Get the presumed location, which includes file and line number
 static std::optional<PresumedLoc> getPresumedLocation(SourceLocation Loc,
@@ -140,21 +141,33 @@ static void emitInitSuggestionDiagnostic(TextDiagnostic &TD,
   llvm::outs().resetColor() << '\n';
 }
 
+static void emitOpportunityInfo(int CurrentOpportunityNumber,
+                                StringRef FunctionName) {
+  llvm::outs().changeColor(llvm::raw_ostream::Colors::CYAN, true)
+      << llvm::formatv("Opportunity #{0} at function '{1}':",
+                       CurrentOpportunityNumber, FunctionName);
+
+  llvm::outs().resetColor() << '\n';
+}
+
+static void emitMissingPart(SourceLocation Loc, SourceManager &Source,
+                            TextDiagnostic &TD, StringRef MissingPart) {
+  std::string Message = "Loop without ";
+  Message += MissingPart;
+  TD.emitDiagnostic(FullSourceLoc(Loc, Source), DiagnosticsEngine::Warning,
+                    Message, std::nullopt, std::nullopt);
+}
+
 static void reportLoopWithoutInit(int CurrentOpportunityNumber,
-                                  const ForStmt &FS, SourceManager &Source,
+                                  const ForStmt &FS, StringRef FunctionName,
+                                  SourceManager &Source,
                                   const LangOptions &LangOpts,
                                   DiagnosticOptions &DiagnosticOpts) {
   TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
 
-  // Report opportunity location info
-  llvm::outs().changeColor(llvm::raw_ostream::Colors::CYAN, true)
-      << llvm::formatv("Opportunity #{0}:", CurrentOpportunityNumber);
+  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
-  llvm::outs().resetColor() << '\n';
-
-  TD.emitDiagnostic(FullSourceLoc(FS.getForLoc(), Source),
-                    DiagnosticsEngine::Warning, "Loop without init",
-                    std::nullopt, std::nullopt);
+  emitMissingPart(FS.getForLoc(), Source, TD, "init");
 
   // Skip on absence of increment variable
   const VarDecl *IncVarDecl = matchLHSVarDeclFromOperator(FS.getInc());
@@ -199,20 +212,16 @@ static void reportLoopWithoutInit(int CurrentOpportunityNumber,
 }
 
 static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
-                                       const ForStmt &FS, SourceManager &Source,
+                                       const ForStmt &FS,
+                                       StringRef FunctionName,
+                                       SourceManager &Source,
                                        const LangOptions &LangOpts,
                                        DiagnosticOptions &DiagnosticOpts) {
   TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
 
-  // Report opportunity location info
-  llvm::outs().changeColor(llvm::raw_ostream::Colors::CYAN, true)
-      << llvm::formatv("Opportunity #{0}:", CurrentOpportunityNumber);
+  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
-  llvm::outs().resetColor() << '\n';
-
-  TD.emitDiagnostic(FullSourceLoc(FS.getForLoc(), Source),
-                    DiagnosticsEngine::Warning, "Loop without condition",
-                    std::nullopt, std::nullopt);
+  emitMissingPart(FS.getForLoc(), Source, TD, "condition");
 
   // Skip on absence of increment variable
   const VarDecl *IncVarDecl = matchLHSVarDeclFromOperator(FS.getInc());
@@ -256,20 +265,16 @@ static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
 }
 
 static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
-                                       const ForStmt &FS, SourceManager &Source,
+                                       const ForStmt &FS,
+                                       StringRef FunctionName,
+                                       SourceManager &Source,
                                        const LangOptions &LangOpts,
                                        DiagnosticOptions &DiagnosticOpts) {
   TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
 
-  // Report opportunity location info
-  llvm::outs().changeColor(llvm::raw_ostream::Colors::CYAN, true)
-      << llvm::formatv("Opportunity #{0}:", CurrentOpportunityNumber);
+  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
-  llvm::outs().resetColor() << '\n';
-
-  TD.emitDiagnostic(FullSourceLoc(FS.getForLoc(), Source),
-                    DiagnosticsEngine::Warning, "Loop without increment",
-                    std::nullopt, std::nullopt);
+  emitMissingPart(FS.getForLoc(), Source, TD, "increment");
 
   // Skip on absence of init binary operator
   const BinaryOperator *InitBO =
@@ -371,12 +376,20 @@ public:
       return;
     }
 
+    // Skip on absent containing function info
+    const FunctionDecl *F = Result.Nodes.getNodeAs<FunctionDecl>("function");
+    if (!F) {
+      return;
+    }
+
+    StringRef FunctionName = F->getName();
+
     // Report a loop without init
     if (!FS->getInit()) {
       NumberOfOpportunities++;
 
       // Report a loop without init refactoring opportunity
-      reportLoopWithoutInit(NumberOfOpportunities, *FS, Source,
+      reportLoopWithoutInit(NumberOfOpportunities, *FS, FunctionName, Source,
                             Context->getLangOpts(),
                             Context->getDiagnostics().getDiagnosticOptions());
     }
@@ -387,7 +400,8 @@ public:
 
       // Report a loop without init refactoring opportunity
       reportLoopWithoutCondition(
-          NumberOfOpportunities, *FS, Source, Context->getLangOpts(),
+          NumberOfOpportunities, *FS, FunctionName, Source,
+          Context->getLangOpts(),
           Context->getDiagnostics().getDiagnosticOptions());
     }
 
@@ -397,7 +411,8 @@ public:
 
       // Report a loop without init refactoring opportunity
       reportLoopWithoutIncrement(
-          NumberOfOpportunities, *FS, Source, Context->getLangOpts(),
+          NumberOfOpportunities, *FS, FunctionName, Source,
+          Context->getLangOpts(),
           Context->getDiagnostics().getDiagnosticOptions());
     }
   }
@@ -449,7 +464,7 @@ int main(int argc, const char **argv) {
                                   RefactoringCode, NumberOfOpportunities);
     llvm::outs().changeColor(llvm::raw_ostream::Colors::RED)
         << "Address these changes to obtain better optimizations in the "
-           "following steps.";
+           "following steps.\n";
   }
 
   return ReturnToolValue;
