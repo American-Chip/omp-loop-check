@@ -181,10 +181,7 @@ static void emitDefect(SourceLocation Loc, SourceManager &Source,
 static void reportBreakInsideLoop(int CurrentOpportunityNumber,
                                   const ForStmt &FS, const BreakStmt &BS,
                                   StringRef FunctionName, SourceManager &Source,
-                                  const LangOptions &LangOpts,
-                                  DiagnosticOptions &DiagnosticOpts) {
-  TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
-
+                                  TextDiagnostic &TD) {
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD,
@@ -195,11 +192,7 @@ static void reportBreakInsideLoop(int CurrentOpportunityNumber,
 
 static void reportLoopWithoutInit(int CurrentOpportunityNumber,
                                   const ForStmt &FS, StringRef FunctionName,
-                                  SourceManager &Source,
-                                  const LangOptions &LangOpts,
-                                  DiagnosticOptions &DiagnosticOpts) {
-  TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
-
+                                  SourceManager &Source, TextDiagnostic &TD) {
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD, "Loop without init");
@@ -248,10 +241,7 @@ static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
                                        const ForStmt &FS,
                                        StringRef FunctionName,
                                        SourceManager &Source,
-                                       const LangOptions &LangOpts,
-                                       DiagnosticOptions &DiagnosticOpts) {
-  TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
-
+                                       TextDiagnostic &TD) {
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD, "Loop without condition");
@@ -301,10 +291,7 @@ static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
                                        const ForStmt &FS,
                                        StringRef FunctionName,
                                        SourceManager &Source,
-                                       const LangOptions &LangOpts,
-                                       DiagnosticOptions &DiagnosticOpts) {
-  TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
-
+                                       TextDiagnostic &TD) {
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD, "Loop without increment");
@@ -417,6 +404,9 @@ public:
 
     StringRef FunctionName = F->getName();
 
+    TextDiagnostic TD(llvm::outs(), Context->getLangOpts(),
+                      &Context->getDiagnostics().getDiagnosticOptions());
+
     // Report a loop with a break statement inside
     if (const BreakStmt *BS = Result.Nodes.getNodeAs<BreakStmt>("break")) {
 
@@ -425,8 +415,7 @@ public:
       NumberOfOpportunities++;
 
       reportBreakInsideLoop(NumberOfOpportunities, *FS, *BS, FunctionName,
-                            Source, Context->getLangOpts(),
-                            Context->getDiagnostics().getDiagnosticOptions());
+                            Source, TD);
 
       return; // do not analyze further this loop
     }
@@ -437,32 +426,24 @@ public:
     if (!FS->getInit()) {
       NumberOfOpportunities++;
 
-      // Report a loop without init refactoring opportunity
       reportLoopWithoutInit(NumberOfOpportunities, *FS, FunctionName, Source,
-                            Context->getLangOpts(),
-                            Context->getDiagnostics().getDiagnosticOptions());
+                            TD);
     }
 
     // Report loop without condition
     if (!FS->getCond()) {
       NumberOfOpportunities++;
 
-      // Report a loop without init refactoring opportunity
-      reportLoopWithoutCondition(
-          NumberOfOpportunities, *FS, FunctionName, Source,
-          Context->getLangOpts(),
-          Context->getDiagnostics().getDiagnosticOptions());
+      reportLoopWithoutCondition(NumberOfOpportunities, *FS, FunctionName,
+                                 Source, TD);
     }
 
     // Report loop without increment
     if (!FS->getInc()) {
       NumberOfOpportunities++;
 
-      // Report a loop without init refactoring opportunity
-      reportLoopWithoutIncrement(
-          NumberOfOpportunities, *FS, FunctionName, Source,
-          Context->getLangOpts(),
-          Context->getDiagnostics().getDiagnosticOptions());
+      reportLoopWithoutIncrement(NumberOfOpportunities, *FS, FunctionName,
+                                 Source, TD);
     }
   }
 
