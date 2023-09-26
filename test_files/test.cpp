@@ -27,6 +27,7 @@ int main() {
   }
 
   for (; j < n; j++) {
+    break;
   }
 
   for (; j < n; j += 1) {

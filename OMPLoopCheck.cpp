@@ -29,14 +29,22 @@ static StringRef RefactoringCode = "HACO001";
 static StringRef RefactoringDescription = "Loop has missing sections";
 static StringRef RefactoringRationale =
     "In order to parallelize a loop with OpenMP, the loop has to be in "
-    "canonical form. One of the conditions of the canonical form is that the "
-    "loop has to have an init, a condition and an increment section.";
+    "canonical form. Among the conditions of the canonical form we have that "
+    "the loop has to have an init, a condition and an increment section. "
+    "Additionally, the loop body cannot contain statements that terminate the "
+    "loop flow.";
 
 // AST Matchers
 
 // Match a loop inside a function
 StatementMatcher LoopMatcher =
     forStmt(hasAncestor(functionDecl().bind("function"))).bind("forLoop");
+
+// Match a break inside a loop inside a function
+StatementMatcher BreakMatcher =
+    breakStmt(hasAncestor(functionDecl().bind("function")),
+              hasAncestor(forStmt().bind("forLoop")))
+        .bind("break");
 
 // Get the presumed location, which includes file and line number
 static std::optional<PresumedLoc> getPresumedLocation(SourceLocation Loc,
@@ -137,8 +145,22 @@ static void emitInitSuggestionDiagnostic(TextDiagnostic &TD,
                       "declaration of loop variable here", std::nullopt,
                       std::nullopt);
   }
+}
 
-  llvm::outs().resetColor() << '\n';
+static void emitBreakSuggestionDiagnostic(TextDiagnostic &TD,
+                                          SourceManager &Source,
+                                          const BreakStmt &BS) {
+  TD.printDiagnosticMessage(
+      llvm::outs(), true,
+      "Modify the logic of the loop body so it does not exit abruptly from it. "
+      "The termination condition should be only handled at the loop header.",
+      0, 0, true);
+
+  TD.emitDiagnostic(FullSourceLoc(BS.getBreakLoc(), Source),
+                    DiagnosticsEngine::Remark, "'break' statement found here",
+                    CharSourceRange::getTokenRange(
+                        SourceRange(BS.getBeginLoc(), BS.getEndLoc())),
+                    std::nullopt);
 }
 
 static void emitOpportunityInfo(int CurrentOpportunityNumber,
@@ -150,12 +172,25 @@ static void emitOpportunityInfo(int CurrentOpportunityNumber,
   llvm::outs().resetColor() << '\n';
 }
 
-static void emitMissingPart(SourceLocation Loc, SourceManager &Source,
-                            TextDiagnostic &TD, StringRef MissingPart) {
-  std::string Message = "Loop without ";
-  Message += MissingPart;
+static void emitDefect(SourceLocation Loc, SourceManager &Source,
+                       TextDiagnostic &TD, StringRef Message) {
   TD.emitDiagnostic(FullSourceLoc(Loc, Source), DiagnosticsEngine::Warning,
                     Message, std::nullopt, std::nullopt);
+}
+
+static void reportBreakInsideLoop(int CurrentOpportunityNumber,
+                                  const ForStmt &FS, const BreakStmt &BS,
+                                  StringRef FunctionName, SourceManager &Source,
+                                  const LangOptions &LangOpts,
+                                  DiagnosticOptions &DiagnosticOpts) {
+  TextDiagnostic TD(llvm::outs(), LangOpts, &DiagnosticOpts);
+
+  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
+
+  emitDefect(FS.getForLoc(), Source, TD,
+             "Loop body contains a 'break' statement");
+
+  emitBreakSuggestionDiagnostic(TD, Source, BS);
 }
 
 static void reportLoopWithoutInit(int CurrentOpportunityNumber,
@@ -167,7 +202,7 @@ static void reportLoopWithoutInit(int CurrentOpportunityNumber,
 
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
-  emitMissingPart(FS.getForLoc(), Source, TD, "init");
+  emitDefect(FS.getForLoc(), Source, TD, "Loop without init");
 
   // Skip on absence of increment variable
   const VarDecl *IncVarDecl = matchLHSVarDeclFromOperator(FS.getInc());
@@ -206,8 +241,6 @@ static void reportLoopWithoutInit(int CurrentOpportunityNumber,
                       CharSourceRange::getTokenRange(
                           SourceRange(FS.getLParenLoc(), FS.getRParenLoc())),
                       std::nullopt);
-
-    llvm::outs().resetColor() << '\n';
   }
 }
 
@@ -221,7 +254,7 @@ static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
 
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
-  emitMissingPart(FS.getForLoc(), Source, TD, "condition");
+  emitDefect(FS.getForLoc(), Source, TD, "Loop without condition");
 
   // Skip on absence of increment variable
   const VarDecl *IncVarDecl = matchLHSVarDeclFromOperator(FS.getInc());
@@ -274,7 +307,7 @@ static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
 
   emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
 
-  emitMissingPart(FS.getForLoc(), Source, TD, "increment");
+  emitDefect(FS.getForLoc(), Source, TD, "Loop without increment");
 
   // Skip on absence of init binary operator
   const BinaryOperator *InitBO =
@@ -384,6 +417,22 @@ public:
 
     StringRef FunctionName = F->getName();
 
+    // Report a loop with a break statement inside
+    if (const BreakStmt *BS = Result.Nodes.getNodeAs<BreakStmt>("break")) {
+
+      // Here the loops come from the AST Matcher BreakMatcher
+
+      NumberOfOpportunities++;
+
+      reportBreakInsideLoop(NumberOfOpportunities, *FS, *BS, FunctionName,
+                            Source, Context->getLangOpts(),
+                            Context->getDiagnostics().getDiagnosticOptions());
+
+      return; // do not analyze further this loop
+    }
+
+    // Here the loops come from the AST Matcher LoopMatcher
+
     // Report a loop without init
     if (!FS->getInit()) {
       NumberOfOpportunities++;
@@ -446,6 +495,7 @@ int main(int argc, const char **argv) {
   LoopPrinter Printer;
   MatchFinder Finder;
   Finder.addMatcher(LoopMatcher, &Printer);
+  Finder.addMatcher(BreakMatcher, &Printer);
 
   llvm::outs().changeColor(llvm::raw_ostream::Colors::SAVEDCOLOR, true)
       << llvm::formatv("\n{0} refactoring opportunities: {1}\n\n",
@@ -454,6 +504,8 @@ int main(int argc, const char **argv) {
   llvm::outs().resetColor() << RefactoringRationale << "\n\n";
 
   auto ReturnToolValue = Tool.run(newFrontendActionFactory(&Finder).get());
+
+  llvm::outs() << '\n';
 
   int NumberOfOpportunities = Printer.getNumberOfOpportunities();
   if (NumberOfOpportunities == 0) {
@@ -464,8 +516,10 @@ int main(int argc, const char **argv) {
                                   RefactoringCode, NumberOfOpportunities);
     llvm::outs().changeColor(llvm::raw_ostream::Colors::RED)
         << "Address these changes to obtain better optimizations in the "
-           "following steps.\n";
+           "following steps.";
   }
+
+  llvm::outs().resetColor() << '\n';
 
   return ReturnToolValue;
 }

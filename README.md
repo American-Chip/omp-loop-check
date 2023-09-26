@@ -5,6 +5,7 @@ OpenMP Loop Check is a Clang utility for verifying if **for** loops in C/C++ fil
 - Loops without init section.
 - Loops without condition section.
 - Loops without increment section.
+- Loops with 'break' statements in the body
 
 ## Build Instructions
 
