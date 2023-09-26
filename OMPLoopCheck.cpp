@@ -26,7 +26,7 @@ using namespace llvm;
 
 // Refactoring details
 static StringRef RefactoringCode = "HACO001";
-static StringRef RefactoringDescription = "Loop has missing sections";
+static StringRef RefactoringDescription = "Loop is not in canonical form";
 static StringRef RefactoringRationale =
     "In order to parallelize a loop with OpenMP, the loop has to be in "
     "canonical form. Among the conditions of the canonical form we have that "
