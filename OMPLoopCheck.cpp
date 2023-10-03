@@ -18,11 +18,15 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <fstream>
 
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::tooling;
 using namespace llvm;
+
+// Output formats
+enum class OutputFormat { CLI, MARKDOWN, HTML };
 
 // Refactoring details
 static StringRef RefactoringCode = "HACO001";
@@ -125,6 +129,8 @@ static const BinaryOperator *getExprAsBinaryOperator(const Expr *Expression) {
 static void emitInitSuggestionDiagnostic(raw_ostream &Out, TextDiagnostic &TD,
                                          SourceManager &Source,
                                          const VarDecl &IncVarDecl) {
+  Out << "<haco_opportunity_suggestion>";
+
   TD.printDiagnosticMessage(
       Out, true,
       llvm::formatv(
@@ -137,45 +143,66 @@ static void emitInitSuggestionDiagnostic(raw_ostream &Out, TextDiagnostic &TD,
           .str(),
       0, 0, true);
 
+  Out << "</haco_opportunity_suggestion>";
+
   std::optional<PresumedLoc> DeclLocation =
       getPresumedLocation(IncVarDecl.getBeginLoc(), Source);
   if (DeclLocation) {
+    Out << "<haco_opportunity_extrainfo>";
+
     TD.emitDiagnostic(FullSourceLoc(IncVarDecl.getBeginLoc(), Source),
                       DiagnosticsEngine::Remark,
                       "declaration of loop variable here", std::nullopt,
                       std::nullopt);
+
+    Out << "</haco_opportunity_extrainfo>";
   }
 }
 
 static void emitBreakSuggestionDiagnostic(raw_ostream &Out, TextDiagnostic &TD,
                                           SourceManager &Source,
                                           const BreakStmt &BS) {
+  Out << "<haco_opportunity_suggestion>";
+
   TD.printDiagnosticMessage(
       Out, true,
       "Modify the logic of the loop body so it does not exit abruptly from it. "
       "The termination condition should be only handled at the loop header.",
       0, 0, true);
 
+  Out << "</haco_opportunity_suggestion>";
+
+  Out << "<haco_opportunity_extrainfo>";
+
   TD.emitDiagnostic(FullSourceLoc(BS.getBreakLoc(), Source),
                     DiagnosticsEngine::Remark, "'break' statement found here",
                     CharSourceRange::getTokenRange(
                         SourceRange(BS.getBeginLoc(), BS.getEndLoc())),
                     std::nullopt);
+
+  Out << "</haco_opportunity_extrainfo>";
 }
 
 static void emitOpportunityInfo(raw_ostream &Out, int CurrentOpportunityNumber,
                                 StringRef FunctionName) {
   Out.changeColor(llvm::raw_ostream::Colors::CYAN, true) << llvm::formatv(
-      "Opportunity #{0} at function '{1}':", CurrentOpportunityNumber,
-      FunctionName);
+      "<haco_opportunity_number>Opportunity #{0}</haco_opportunity_number> "
+      "<haco_opportunity_function>at function "
+      "'{1}':</haco_opportunity_function>",
+      CurrentOpportunityNumber, FunctionName);
 
   Out.resetColor() << '\n';
 }
 
-static void emitDefect(SourceLocation Loc, SourceManager &Source,
-                       TextDiagnostic &TD, StringRef Message) {
+static void emitDefect(raw_ostream &Out, TextDiagnostic &TD,
+                       SourceManager &Source, SourceLocation Loc,
+                       StringRef Message) {
+  Out << "<haco_opportunity_defect>";
+
   TD.emitDiagnostic(FullSourceLoc(Loc, Source), DiagnosticsEngine::Warning,
                     Message, std::nullopt, std::nullopt);
+
+  Out << "</haco_opportunity_defect>";
 }
 
 static void reportBreakInsideLoop(raw_ostream &Out, TextDiagnostic &TD,
@@ -183,31 +210,39 @@ static void reportBreakInsideLoop(raw_ostream &Out, TextDiagnostic &TD,
                                   int CurrentOpportunityNumber,
                                   const ForStmt &FS, const BreakStmt &BS,
                                   StringRef FunctionName) {
+  Out << "<haco_opportunity_item>";
+
   emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
-  emitDefect(FS.getForLoc(), Source, TD,
+  emitDefect(Out, TD, Source, FS.getForLoc(),
              "Loop body contains a 'break' statement");
 
   emitBreakSuggestionDiagnostic(Out, TD, Source, BS);
+
+  Out << "</haco_opportunity_item>";
 }
 
 static void reportLoopWithoutInit(raw_ostream &Out, TextDiagnostic &TD,
                                   SourceManager &Source,
                                   int CurrentOpportunityNumber,
                                   const ForStmt &FS, StringRef FunctionName) {
+  Out << "<haco_opportunity_item>";
+
   emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
-  emitDefect(FS.getForLoc(), Source, TD, "Loop without init");
+  emitDefect(Out, TD, Source, FS.getForLoc(), "Loop without init");
 
   // Skip on absence of increment variable
   const VarDecl *IncVarDecl = matchLHSVarDeclFromOperator(FS.getInc());
   if (!IncVarDecl) {
+    Out << "</haco_opportunity_item>";
     return;
   }
 
   // Skip on absence of conforming condition
   const BinaryOperator *CondBO = getExprAsBinaryOperator(FS.getCond());
   if (!CondBO) {
+    Out << "</haco_opportunity_item>";
     return;
   }
 
@@ -216,6 +251,8 @@ static void reportLoopWithoutInit(raw_ostream &Out, TextDiagnostic &TD,
   if (CondLHSVarDecl &&
       IncVarDecl->getCanonicalDecl() == CondLHSVarDecl->getCanonicalDecl()) {
     emitInitSuggestionDiagnostic(Out, TD, Source, *IncVarDecl);
+    Out << "</haco_opportunity_item>";
+
     return; // Skip further checks
   }
 
@@ -224,11 +261,17 @@ static void reportLoopWithoutInit(raw_ostream &Out, TextDiagnostic &TD,
   if (CondRHSVarDecl &&
       IncVarDecl->getCanonicalDecl() == CondRHSVarDecl->getCanonicalDecl()) {
     emitInitSuggestionDiagnostic(Out, TD, Source, *IncVarDecl);
+    Out << "</haco_opportunity_item>";
+
     return; // Skip further checks
   }
 
   // Increment and condition variable are different, make a warning
   if (CondLHSVarDecl || CondRHSVarDecl) {
+    Out << "<haco_opportunity_suggestion>";
+    Out << "</haco_opportunity_suggestion>";
+    Out << "<haco_opportunity_extrainfo>";
+
     TD.emitDiagnostic(FullSourceLoc(FS.getLParenLoc(), Source),
                       DiagnosticsEngine::Remark,
                       "The condition and the increment variables are not "
@@ -236,7 +279,11 @@ static void reportLoopWithoutInit(raw_ostream &Out, TextDiagnostic &TD,
                       CharSourceRange::getTokenRange(
                           SourceRange(FS.getLParenLoc(), FS.getRParenLoc())),
                       std::nullopt);
+
+    Out << "</haco_opportunity_extrainfo>";
   }
+
+  Out << "</haco_opportunity_item>";
 }
 
 static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
@@ -244,13 +291,15 @@ static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
                                        int CurrentOpportunityNumber,
                                        const ForStmt &FS,
                                        StringRef FunctionName) {
+  Out << "<haco_opportunity_item>";
   emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
-  emitDefect(FS.getForLoc(), Source, TD, "Loop without condition");
+  emitDefect(Out, TD, Source, FS.getForLoc(), "Loop without condition");
 
   // Skip on absence of increment variable
   const VarDecl *IncVarDecl = matchLHSVarDeclFromOperator(FS.getInc());
   if (!IncVarDecl) {
+    Out << "</haco_opportunity_item>";
     return;
   }
 
@@ -258,6 +307,8 @@ static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
   const BinaryOperator *InitBO =
       llvm::dyn_cast_or_null<BinaryOperator>(FS.getInit());
   if (!InitBO) {
+    Out << "</haco_opportunity_item>";
+
     return;
   }
 
@@ -265,6 +316,8 @@ static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
   const VarDecl *InitVarDecl = matchVarDeclFromDeclRefExpr(InitBO->getLHS());
   if (InitVarDecl &&
       IncVarDecl->getCanonicalDecl() == InitVarDecl->getCanonicalDecl()) {
+    Out << "<haco_opportunity_suggestion>";
+
     TD.printDiagnosticMessage(
         Out, true,
         "Init and increment variables match, but condition variable is "
@@ -272,11 +325,21 @@ static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
         0, 0, true);
 
     Out.resetColor() << '\n';
+
+    Out << "</haco_opportunity_suggestion>";
+    Out << "<haco_opportunity_extrainfo>";
+    Out << "</haco_opportunity_extrainfo>";
+    Out << "</haco_opportunity_item>";
+
     return; // Skip further checks
   }
 
   // Increment and init variable are different, make a warning
   if (InitVarDecl) {
+    Out << "<haco_opportunity_suggestion>";
+    Out << "</haco_opportunity_suggestion>";
+    Out << "<haco_opportunity_extrainfo>";
+
     TD.emitDiagnostic(FullSourceLoc(FS.getLParenLoc(), Source),
                       DiagnosticsEngine::Remark,
                       "The init and the increment variables are not "
@@ -286,7 +349,9 @@ static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
                       std::nullopt);
 
     Out.resetColor() << '\n';
+    Out << "</haco_opportunity_extrainfo>";
   }
+  Out << "</haco_opportunity_item>";
 }
 
 static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
@@ -294,14 +359,17 @@ static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
                                        int CurrentOpportunityNumber,
                                        const ForStmt &FS,
                                        StringRef FunctionName) {
+  Out << "<haco_opportunity_item>";
   emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
-  emitDefect(FS.getForLoc(), Source, TD, "Loop without increment");
+  emitDefect(Out, TD, Source, FS.getForLoc(), "Loop without increment");
 
   // Skip on absence of init binary operator
   const BinaryOperator *InitBO =
       llvm::dyn_cast_or_null<BinaryOperator>(FS.getInit());
   if (!InitBO) {
+    Out << "</haco_opportunity_item>";
+
     return;
   }
 
@@ -314,6 +382,7 @@ static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
   // Skip on absence of conforming condition
   const BinaryOperator *CondBO = getExprAsBinaryOperator(FS.getCond());
   if (!CondBO) {
+    Out << "</haco_opportunity_item>";
     return;
   }
 
@@ -328,6 +397,8 @@ static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
         0, 0, true);
 
     Out.resetColor() << '\n';
+    Out << "</haco_opportunity_item>";
+
     return; // Skip further checks
   }
 
@@ -342,6 +413,8 @@ static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
         0, 0, true);
 
     Out.resetColor() << '\n';
+    Out << "</haco_opportunity_item>";
+
     return; // Skip further checks
   }
 
@@ -357,6 +430,8 @@ static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
 
     Out.resetColor() << '\n';
   }
+
+  Out << "</haco_opportunity_item>";
 }
 
 static bool isConformingLoop(const ForStmt *FS, SourceManager &Source) {
@@ -467,6 +542,95 @@ static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 // A help message for this specific tool can be added afterwards.
 static cl::extrahelp MoreHelp("\nMore help text...\n");
 
+static std::string replaceAll(const std::string &Str,    // where to work
+                              const std::string &Find,   // substitute 'find'
+                              const std::string &Replace //      by 'replace'
+) {
+  using namespace std;
+  string Result;
+  size_t FindLen = Find.size();
+  size_t Pos, From = 0;
+  while (string::npos != (Pos = Str.find(Find, From))) {
+    Result.append(Str, From, Pos - From);
+    Result.append(Replace);
+    From = Pos + FindLen;
+  }
+  Result.append(Str, From, string::npos);
+
+  return Result;
+}
+
+static void printResults(OutputFormat Format, std::string Results) {
+  switch (Format) {
+  case OutputFormat::HTML: {
+    std::fstream HTMLFile;
+    HTMLFile.open("haco_html_file.html", std::ios::out);
+
+    if (!HTMLFile.is_open()) {
+      llvm::errs() << "Error: could not open the file\n";
+    }
+
+    Results = replaceAll(Results, "<haco_header_big>", "<h1>");
+    Results = replaceAll(Results, "<haco_header_medium>", "<h2>");
+    Results = replaceAll(Results, "<haco_header_small>", "<h3>");
+    Results = replaceAll(Results, "<haco_text>", "<p>");
+    Results = replaceAll(Results, "<haco_opportunity_list>",
+                         "<table border=1 "
+                         "width=80%><tr><th>Number</th><th>Function</"
+                         "th><th>Details</th><th>Suggestion</th><th>Hint</th>");
+    Results = replaceAll(Results, "<haco_opportunity_item>", "<tr>");
+    Results =
+        replaceAll(Results, "<haco_opportunity_number>Opportunity #", "<td>");
+    Results =
+        replaceAll(Results, "<haco_opportunity_function>at function '", "<td>");
+    Results = replaceAll(Results, "<haco_opportunity_defect>", "<td>");
+    Results = replaceAll(Results, "<haco_opportunity_suggestion>", "<td>");
+    Results = replaceAll(Results, "<haco_opportunity_extrainfo>", "<td>");
+    Results = replaceAll(Results, "</haco_header_big>", "</h1>");
+    Results = replaceAll(Results, "</haco_header_medium>", "</h2>");
+    Results = replaceAll(Results, "</haco_header_small>", "</h3>");
+    Results = replaceAll(Results, "</haco_text>", "</p>");
+    Results = replaceAll(Results, "</haco_opportunity_list>", "</table>");
+    Results = replaceAll(Results, "</haco_opportunity_item>", "</tr>");
+    Results = replaceAll(Results, "</haco_opportunity_number>", "</td>");
+    Results = replaceAll(Results, "':</haco_opportunity_function>", "</td>");
+    Results = replaceAll(Results, "</haco_opportunity_defect>", "</td>");
+    Results = replaceAll(Results, "</haco_opportunity_suggestion>", "</td>");
+    Results = replaceAll(Results, "</haco_opportunity_extrainfo>", "</td>");
+
+    HTMLFile << Results;
+    HTMLFile.close();
+    break;
+  }
+  case OutputFormat::CLI:
+  default:
+    Results = replaceAll(Results, "<haco_header_big>", "");
+    Results = replaceAll(Results, "<haco_header_medium>", "");
+    Results = replaceAll(Results, "<haco_header_small>", "");
+    Results = replaceAll(Results, "<haco_text>", "");
+    Results = replaceAll(Results, "<haco_opportunity_list>", "");
+    Results = replaceAll(Results, "<haco_opportunity_item>", "");
+    Results = replaceAll(Results, "<haco_opportunity_number>", "");
+    Results = replaceAll(Results, "<haco_opportunity_function>", "");
+    Results = replaceAll(Results, "<haco_opportunity_defect>", "");
+    Results = replaceAll(Results, "<haco_opportunity_suggestion>", "");
+    Results = replaceAll(Results, "<haco_opportunity_extrainfo>", "");
+    Results = replaceAll(Results, "</haco_header_big>", "");
+    Results = replaceAll(Results, "</haco_header_medium>", "");
+    Results = replaceAll(Results, "</haco_header_small>", "");
+    Results = replaceAll(Results, "</haco_text>", "");
+    Results = replaceAll(Results, "</haco_opportunity_list>", "");
+    Results = replaceAll(Results, "</haco_opportunity_item>", "");
+    Results = replaceAll(Results, "</haco_opportunity_number>", "");
+    Results = replaceAll(Results, "</haco_opportunity_function>", "");
+    Results = replaceAll(Results, "</haco_opportunity_defect>", "");
+    Results = replaceAll(Results, "</haco_opportunity_suggestion>", "");
+    Results = replaceAll(Results, "</haco_opportunity_extrainfo>", "");
+    llvm::outs() << Results;
+    break;
+  }
+}
+
 int main(int argc, const char **argv) {
   auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
   if (!ExpectedParser) {
@@ -478,36 +642,51 @@ int main(int argc, const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
-  raw_ostream &Out = llvm::outs();
+  std::string Results;
+  raw_string_ostream StringOut(Results);
 
-  LoopPrinter Printer(Out);
+  LoopPrinter Printer(StringOut);
   MatchFinder Finder;
   Finder.addMatcher(LoopMatcher, &Printer);
   Finder.addMatcher(BreakMatcher, &Printer);
 
-  Out.changeColor(llvm::raw_ostream::Colors::SAVEDCOLOR, true)
-      << llvm::formatv("\n{0} refactoring opportunities: {1}\n\n",
+  StringOut << "<haco_header_big>OpenMP Loop Check Results</haco_header_big>";
+
+  StringOut.changeColor(llvm::raw_ostream::Colors::SAVEDCOLOR, true)
+      << llvm::formatv("\n<haco_header_medium>{0} refactoring "
+                       "opportunities: {1}</haco_header_medium>\n\n",
                        RefactoringCode, RefactoringDescription);
 
-  Out.resetColor() << RefactoringRationale << "\n\n";
+  StringOut.resetColor() << "<haco_text>" << RefactoringRationale
+                         << "</haco_text>"
+                         << "\n\n";
+
+  StringOut << "<haco_opportunity_list>";
 
   auto ReturnToolValue = Tool.run(newFrontendActionFactory(&Finder).get());
 
-  Out << '\n';
+  StringOut << "</haco_opportunity_list>";
+
+  StringOut << '\n';
 
   int NumberOfOpportunities = Printer.getNumberOfOpportunities();
   if (NumberOfOpportunities == 0) {
-    Out.changeColor(llvm::raw_ostream::Colors::RED)
-        << "No refactoring opportunities were found.";
+    StringOut.changeColor(llvm::raw_ostream::Colors::RED)
+        << "<haco_header_small>No refactoring opportunities were "
+           "found.</haco_header_small>";
   } else {
-    Out << llvm::formatv("Number of {0} opportunities found: {1}\n\n",
-                         RefactoringCode, NumberOfOpportunities);
-    Out.changeColor(llvm::raw_ostream::Colors::RED)
-        << "Address these changes to obtain better optimizations in the "
-           "following steps.";
+    StringOut << llvm::formatv("<haco_header_small>Number of {0} opportunities "
+                               "found: {1}</haco_header_small>\n\n",
+                               RefactoringCode, NumberOfOpportunities);
+    StringOut.changeColor(llvm::raw_ostream::Colors::RED)
+        << "<haco_text>Address these changes to obtain better optimizations in "
+           "the "
+           "following steps.</haco_text>";
   }
 
-  Out.resetColor() << '\n';
+  StringOut.resetColor() << '\n';
+
+  printResults(OutputFormat::HTML, StringOut.str());
 
   return ReturnToolValue;
 }
