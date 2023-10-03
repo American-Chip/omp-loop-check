@@ -122,11 +122,11 @@ static const BinaryOperator *getExprAsBinaryOperator(const Expr *Expression) {
       Expression->IgnoreParenImpCasts());
 }
 
-static void emitInitSuggestionDiagnostic(TextDiagnostic &TD,
+static void emitInitSuggestionDiagnostic(raw_ostream &Out, TextDiagnostic &TD,
                                          SourceManager &Source,
                                          const VarDecl &IncVarDecl) {
   TD.printDiagnosticMessage(
-      llvm::outs(), true,
+      Out, true,
       llvm::formatv(
           "Init '{0}' inside the loop header. Follow its "
           "usage from the reported declaration point to pick the right "
@@ -147,11 +147,11 @@ static void emitInitSuggestionDiagnostic(TextDiagnostic &TD,
   }
 }
 
-static void emitBreakSuggestionDiagnostic(TextDiagnostic &TD,
+static void emitBreakSuggestionDiagnostic(raw_ostream &Out, TextDiagnostic &TD,
                                           SourceManager &Source,
                                           const BreakStmt &BS) {
   TD.printDiagnosticMessage(
-      llvm::outs(), true,
+      Out, true,
       "Modify the logic of the loop body so it does not exit abruptly from it. "
       "The termination condition should be only handled at the loop header.",
       0, 0, true);
@@ -163,13 +163,13 @@ static void emitBreakSuggestionDiagnostic(TextDiagnostic &TD,
                     std::nullopt);
 }
 
-static void emitOpportunityInfo(int CurrentOpportunityNumber,
+static void emitOpportunityInfo(raw_ostream &Out, int CurrentOpportunityNumber,
                                 StringRef FunctionName) {
-  llvm::outs().changeColor(llvm::raw_ostream::Colors::CYAN, true)
-      << llvm::formatv("Opportunity #{0} at function '{1}':",
-                       CurrentOpportunityNumber, FunctionName);
+  Out.changeColor(llvm::raw_ostream::Colors::CYAN, true) << llvm::formatv(
+      "Opportunity #{0} at function '{1}':", CurrentOpportunityNumber,
+      FunctionName);
 
-  llvm::outs().resetColor() << '\n';
+  Out.resetColor() << '\n';
 }
 
 static void emitDefect(SourceLocation Loc, SourceManager &Source,
@@ -178,22 +178,24 @@ static void emitDefect(SourceLocation Loc, SourceManager &Source,
                     Message, std::nullopt, std::nullopt);
 }
 
-static void reportBreakInsideLoop(int CurrentOpportunityNumber,
+static void reportBreakInsideLoop(raw_ostream &Out, TextDiagnostic &TD,
+                                  SourceManager &Source,
+                                  int CurrentOpportunityNumber,
                                   const ForStmt &FS, const BreakStmt &BS,
-                                  StringRef FunctionName, SourceManager &Source,
-                                  TextDiagnostic &TD) {
-  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
+                                  StringRef FunctionName) {
+  emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD,
              "Loop body contains a 'break' statement");
 
-  emitBreakSuggestionDiagnostic(TD, Source, BS);
+  emitBreakSuggestionDiagnostic(Out, TD, Source, BS);
 }
 
-static void reportLoopWithoutInit(int CurrentOpportunityNumber,
-                                  const ForStmt &FS, StringRef FunctionName,
-                                  SourceManager &Source, TextDiagnostic &TD) {
-  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
+static void reportLoopWithoutInit(raw_ostream &Out, TextDiagnostic &TD,
+                                  SourceManager &Source,
+                                  int CurrentOpportunityNumber,
+                                  const ForStmt &FS, StringRef FunctionName) {
+  emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD, "Loop without init");
 
@@ -213,7 +215,7 @@ static void reportLoopWithoutInit(int CurrentOpportunityNumber,
   const VarDecl *CondLHSVarDecl = matchVarDeclFromDeclRefExpr(CondBO->getLHS());
   if (CondLHSVarDecl &&
       IncVarDecl->getCanonicalDecl() == CondLHSVarDecl->getCanonicalDecl()) {
-    emitInitSuggestionDiagnostic(TD, Source, *IncVarDecl);
+    emitInitSuggestionDiagnostic(Out, TD, Source, *IncVarDecl);
     return; // Skip further checks
   }
 
@@ -221,7 +223,7 @@ static void reportLoopWithoutInit(int CurrentOpportunityNumber,
   const VarDecl *CondRHSVarDecl = matchVarDeclFromDeclRefExpr(CondBO->getRHS());
   if (CondRHSVarDecl &&
       IncVarDecl->getCanonicalDecl() == CondRHSVarDecl->getCanonicalDecl()) {
-    emitInitSuggestionDiagnostic(TD, Source, *IncVarDecl);
+    emitInitSuggestionDiagnostic(Out, TD, Source, *IncVarDecl);
     return; // Skip further checks
   }
 
@@ -237,12 +239,12 @@ static void reportLoopWithoutInit(int CurrentOpportunityNumber,
   }
 }
 
-static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
-                                       const ForStmt &FS,
-                                       StringRef FunctionName,
+static void reportLoopWithoutCondition(raw_ostream &Out, TextDiagnostic &TD,
                                        SourceManager &Source,
-                                       TextDiagnostic &TD) {
-  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
+                                       int CurrentOpportunityNumber,
+                                       const ForStmt &FS,
+                                       StringRef FunctionName) {
+  emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD, "Loop without condition");
 
@@ -264,12 +266,12 @@ static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
   if (InitVarDecl &&
       IncVarDecl->getCanonicalDecl() == InitVarDecl->getCanonicalDecl()) {
     TD.printDiagnosticMessage(
-        llvm::outs(), true,
+        Out, true,
         "Init and increment variables match, but condition variable is "
         "missing.",
         0, 0, true);
 
-    llvm::outs().resetColor() << '\n';
+    Out.resetColor() << '\n';
     return; // Skip further checks
   }
 
@@ -283,16 +285,16 @@ static void reportLoopWithoutCondition(int CurrentOpportunityNumber,
                           SourceRange(FS.getLParenLoc(), FS.getRParenLoc())),
                       std::nullopt);
 
-    llvm::outs().resetColor() << '\n';
+    Out.resetColor() << '\n';
   }
 }
 
-static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
-                                       const ForStmt &FS,
-                                       StringRef FunctionName,
+static void reportLoopWithoutIncrement(raw_ostream &Out, TextDiagnostic &TD,
                                        SourceManager &Source,
-                                       TextDiagnostic &TD) {
-  emitOpportunityInfo(CurrentOpportunityNumber, FunctionName);
+                                       int CurrentOpportunityNumber,
+                                       const ForStmt &FS,
+                                       StringRef FunctionName) {
+  emitOpportunityInfo(Out, CurrentOpportunityNumber, FunctionName);
 
   emitDefect(FS.getForLoc(), Source, TD, "Loop without increment");
 
@@ -320,12 +322,12 @@ static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
   if (CondLHSVarDecl &&
       InitVarDecl->getCanonicalDecl() == CondLHSVarDecl->getCanonicalDecl()) {
     TD.printDiagnosticMessage(
-        llvm::outs(), true,
+        Out, true,
         "Init and condition variables match, but increment variable is "
         "missing.",
         0, 0, true);
 
-    llvm::outs().resetColor() << '\n';
+    Out.resetColor() << '\n';
     return; // Skip further checks
   }
 
@@ -334,12 +336,12 @@ static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
   if (CondRHSVarDecl &&
       InitVarDecl->getCanonicalDecl() == CondRHSVarDecl->getCanonicalDecl()) {
     TD.printDiagnosticMessage(
-        llvm::outs(), true,
+        Out, true,
         "Init and condition variables match, but increment variable is "
         "missing.",
         0, 0, true);
 
-    llvm::outs().resetColor() << '\n';
+    Out.resetColor() << '\n';
     return; // Skip further checks
   }
 
@@ -353,7 +355,7 @@ static void reportLoopWithoutIncrement(int CurrentOpportunityNumber,
                           SourceRange(FS.getLParenLoc(), FS.getRParenLoc())),
                       std::nullopt);
 
-    llvm::outs().resetColor() << '\n';
+    Out.resetColor() << '\n';
   }
 }
 
@@ -379,8 +381,11 @@ static bool isConformingLoop(const ForStmt *FS, SourceManager &Source) {
 class LoopPrinter : public MatchFinder::MatchCallback {
 private:
   int NumberOfOpportunities = 0;
+  raw_ostream &Out;
 
 public:
+  LoopPrinter(raw_ostream &OutStream) : Out(OutStream) {}
+
   void run(const MatchFinder::MatchResult &Result) override {
     // Skip on lack of context
     ASTContext *Context = Result.Context;
@@ -404,7 +409,7 @@ public:
 
     StringRef FunctionName = F->getName();
 
-    TextDiagnostic TD(llvm::outs(), Context->getLangOpts(),
+    TextDiagnostic TD(Out, Context->getLangOpts(),
                       &Context->getDiagnostics().getDiagnosticOptions());
 
     // Report a loop with a break statement inside
@@ -414,8 +419,8 @@ public:
 
       NumberOfOpportunities++;
 
-      reportBreakInsideLoop(NumberOfOpportunities, *FS, *BS, FunctionName,
-                            Source, TD);
+      reportBreakInsideLoop(Out, TD, Source, NumberOfOpportunities, *FS, *BS,
+                            FunctionName);
 
       return; // do not analyze further this loop
     }
@@ -426,24 +431,24 @@ public:
     if (!FS->getInit()) {
       NumberOfOpportunities++;
 
-      reportLoopWithoutInit(NumberOfOpportunities, *FS, FunctionName, Source,
-                            TD);
+      reportLoopWithoutInit(Out, TD, Source, NumberOfOpportunities, *FS,
+                            FunctionName);
     }
 
     // Report loop without condition
     if (!FS->getCond()) {
       NumberOfOpportunities++;
 
-      reportLoopWithoutCondition(NumberOfOpportunities, *FS, FunctionName,
-                                 Source, TD);
+      reportLoopWithoutCondition(Out, TD, Source, NumberOfOpportunities, *FS,
+                                 FunctionName);
     }
 
     // Report loop without increment
     if (!FS->getInc()) {
       NumberOfOpportunities++;
 
-      reportLoopWithoutIncrement(NumberOfOpportunities, *FS, FunctionName,
-                                 Source, TD);
+      reportLoopWithoutIncrement(Out, TD, Source, NumberOfOpportunities, *FS,
+                                 FunctionName);
     }
   }
 
@@ -473,34 +478,36 @@ int main(int argc, const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
-  LoopPrinter Printer;
+  raw_ostream &Out = llvm::outs();
+
+  LoopPrinter Printer(Out);
   MatchFinder Finder;
   Finder.addMatcher(LoopMatcher, &Printer);
   Finder.addMatcher(BreakMatcher, &Printer);
 
-  llvm::outs().changeColor(llvm::raw_ostream::Colors::SAVEDCOLOR, true)
+  Out.changeColor(llvm::raw_ostream::Colors::SAVEDCOLOR, true)
       << llvm::formatv("\n{0} refactoring opportunities: {1}\n\n",
                        RefactoringCode, RefactoringDescription);
 
-  llvm::outs().resetColor() << RefactoringRationale << "\n\n";
+  Out.resetColor() << RefactoringRationale << "\n\n";
 
   auto ReturnToolValue = Tool.run(newFrontendActionFactory(&Finder).get());
 
-  llvm::outs() << '\n';
+  Out << '\n';
 
   int NumberOfOpportunities = Printer.getNumberOfOpportunities();
   if (NumberOfOpportunities == 0) {
-    llvm::outs().changeColor(llvm::raw_ostream::Colors::RED)
+    Out.changeColor(llvm::raw_ostream::Colors::RED)
         << "No refactoring opportunities were found.";
   } else {
-    llvm::outs() << llvm::formatv("Number of {0} opportunities found: {1}\n\n",
-                                  RefactoringCode, NumberOfOpportunities);
-    llvm::outs().changeColor(llvm::raw_ostream::Colors::RED)
+    Out << llvm::formatv("Number of {0} opportunities found: {1}\n\n",
+                         RefactoringCode, NumberOfOpportunities);
+    Out.changeColor(llvm::raw_ostream::Colors::RED)
         << "Address these changes to obtain better optimizations in the "
            "following steps.";
   }
 
-  llvm::outs().resetColor() << '\n';
+  Out.resetColor() << '\n';
 
   return ReturnToolValue;
 }
