@@ -17,7 +17,7 @@ cd llvm-project
 Clone this repository into the **clang-tools-extra** folder of the LLVM sources:
 ```bash
 cd clang-tools-extra
-git clone git@github.com:American-Chip/omp-loop-checker.git
+git clone https://github.com/American-Chip/omp-loop-check.git
 ```
 Add **omp-loop-check** as a subdirectory into the `CMakeLists.txt` file of **clang-tools-extra**:
 ```CMake
